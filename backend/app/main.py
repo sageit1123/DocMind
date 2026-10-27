@@ -6,6 +6,7 @@ from fastapi import UploadFile, File, HTTPException
 from pypdf import PdfReader
 from io import BytesIO
 from sentence_transformers import SentenceTransformer
+from app.database import get_connection
 
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 
@@ -225,15 +226,59 @@ async def upload_document(file: UploadFile = File(...)):
         )
 
     # Replace the active document only after successful processing.
-    global document_chunks
-    document_chunks = new_chunks
+    
+    # Save the document and its chunks in one transaction.
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO documents (filename)
+                    VALUES (%s)
+                    RETURNING id;
+                    """,
+                    (file.filename,),
+                )
+
+                document_id = cur.fetchone()[0]
+
+                for chunk in new_chunks:
+                    embedding_values = (
+                        "[" + ",".join(
+                            str(float(value))
+                            for value in chunk["embedding"]
+                        ) + "]"
+                    )
+
+                    cur.execute(
+                        """
+                        INSERT INTO document_chunks
+                            (document_id, page_number, chunk_text, embedding)
+                        VALUES (%s, %s, %s, %s::vector);
+                        """,
+                        (
+                            document_id,
+                            chunk["page"],
+                            chunk["text"],
+                            embedding_values,
+                        ),
+                    )
+
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to save the processed PDF to the database.",
+        )
+
 
     return {
         "message": "PDF processed successfully for semantic search!",
         "filename": file.filename,
         "page_count": len(pdf.pages),
-        "chunk_count": len(document_chunks),
+        "document_id": document_id,
+        "chunk_count": len(new_chunks),
     }
+
 
 @app.post("/api/search")
 def search_document(request: SearchRequest):
@@ -245,41 +290,67 @@ def search_document(request: SearchRequest):
             detail="Question cannot be empty.",
         )
 
-    if not document_chunks:
-        raise HTTPException(
-            status_code=400,
-            detail="Please upload a PDF before asking a question.",
-        )
-
-    # Embed the question using the same model as the document.
+    # Generate the query embedding using the same model as uploaded chunks.
     query_embedding = embedding_model.encode(
         query,
         normalize_embeddings=True,
         show_progress_bar=False,
     )
 
-    # Normalized vectors allow dot product to represent cosine similarity.
-    scores = embedding_model.similarity(
-        query_embedding,
-        [chunk["embedding"] for chunk in document_chunks],
-    )[0]
+    # Convert the embedding to pgvector's text representation.
+    embedding_values = (
+        "[" + ",".join(str(float(value)) for value in query_embedding) + "]"
+    )
 
-    ranked_indices = scores.argsort(descending=True)
-    results = []
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                # Find the most relevant chunks using cosine distance.
+                cur.execute(
+                    """
+                    SELECT
+                        page_number,
+                        chunk_text,
+                        1 - (embedding <=> %s::vector) AS similarity
+                    FROM document_chunks
+                    ORDER BY embedding <=> %s::vector
+                    LIMIT %s;
+                    """,
+                    (
+                        embedding_values,
+                        embedding_values,
+                        request.top_k,
+                    ),
+                )
 
-    for index in ranked_indices[:request.top_k]:
-        chunk = document_chunks[int(index)]
+                rows = cur.fetchall()
 
-        results.append({
-            "page": chunk["page"],
-            "text": chunk["text"],
-            "similarity": round(float(scores[index]), 4),
-        })
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to search the document database.",
+        )
+
+    if not rows:
+        raise HTTPException(
+            status_code=400,
+            detail="Please upload a PDF before asking a question.",
+        )
+
+    results = [
+        {
+            "page": page_number,
+            "text": chunk_text,
+            "similarity": round(float(similarity), 4),
+        }
+        for page_number, chunk_text, similarity in rows
+    ]
 
     return {
         "query": query,
         "results": results,
     }
+
 
 
 
