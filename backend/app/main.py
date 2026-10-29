@@ -101,6 +101,10 @@ document_chunks = []
 
 app = FastAPI()
 
+@app.get("/health")
+def health_check():
+    return {"status": "ok"}
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -114,6 +118,7 @@ app.add_middleware(
 
 class MessageRequest(BaseModel):
     message: str = Field(min_length=1, max_length=1000)
+
 
 @app.get("/")
 def home():
