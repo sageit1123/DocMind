@@ -25,3 +25,6 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Uploaded PDF files
+backend/storage/uploads/

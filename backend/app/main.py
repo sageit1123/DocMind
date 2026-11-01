@@ -4,7 +4,10 @@ from pydantic import BaseModel, Field
 
 from app.database import get_connection
 from app.services.embeddings import embedding_model
-from app.services.ingestion import process_pdf
+from app.services.file_storage import save_pdf, get_pdf_path
+from app.tasks.document_tasks import process_document
+
+from app.database import get_connection
 
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 
@@ -60,10 +63,14 @@ def send_message(request: MessageRequest):
     return {"reply": f"You said: {message}"}
 
 
+
 @app.post("/api/upload")
 async def upload_document(file: UploadFile = File(...)):
     if not file.filename:
-        raise HTTPException(status_code=400, detail="No file selected.")
+        raise HTTPException(
+            status_code=400,
+            detail="No file selected.",
+        )
 
     if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(
@@ -71,7 +78,7 @@ async def upload_document(file: UploadFile = File(...)):
             detail="Only PDF files are allowed.",
         )
 
-    # Validate PDF signature.
+    # Read and validate the PDF.
     header = await file.read(5)
 
     if header != b"%PDF-":
@@ -80,8 +87,7 @@ async def upload_document(file: UploadFile = File(...)):
             detail="The uploaded file does not appear to be a valid PDF.",
         )
 
-    # Enforce the 10 MB size limit.
-    total_size = len(header)
+    contents = bytearray(header)
 
     while True:
         chunk = await file.read(1024 * 1024)
@@ -89,68 +95,81 @@ async def upload_document(file: UploadFile = File(...)):
         if not chunk:
             break
 
-        total_size += len(chunk)
+        contents.extend(chunk)
 
-        if total_size > MAX_FILE_SIZE:
+        if len(contents) > MAX_FILE_SIZE:
             raise HTTPException(
                 status_code=413,
                 detail="File is too large. Maximum size is 10 MB.",
             )
 
-    # Process the PDF using the ingestion service.
-    await file.seek(0)
-    contents = await file.read()
-    new_chunks = process_pdf(contents)
+    storage_path = None
 
-    # Save the document and chunks in one transaction.
     try:
+        # Save the PDF to persistent local storage.
+        storage_path = save_pdf(bytes(contents))
+
+        # Create the document record.
+        # PostgreSQL assigns status='queued' through its server default.
         with get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    INSERT INTO documents (filename)
-                    VALUES (%s)
-                    RETURNING id;
+                    INSERT INTO documents (filename, storage_path)
+                    VALUES (%s, %s)
+                    RETURNING id, status;
                     """,
-                    (file.filename,),
+                    (file.filename, storage_path),
                 )
 
-                document_id = cur.fetchone()[0]
-
-                for chunk in new_chunks:
-                    embedding_values = (
-                        "[" + ",".join(
-                            str(float(value))
-                            for value in chunk["embedding"]
-                        ) + "]"
-                    )
-
-                    cur.execute(
-                        """
-                        INSERT INTO document_chunks
-                            (document_id, page_number, chunk_text, embedding)
-                        VALUES (%s, %s, %s, %s::vector);
-                        """,
-                        (
-                            document_id,
-                            chunk["page"],
-                            chunk["text"],
-                            embedding_values,
-                        ),
-                    )
+                document_id, status = cur.fetchone()
 
     except Exception as exc:
+        # Remove the saved PDF if database insertion fails.
+        if storage_path is not None:
+            try:
+                get_pdf_path(storage_path).unlink()
+            except Exception:
+                pass
+
         raise HTTPException(
             status_code=500,
-            detail="Failed to save the processed PDF to the database.",
+            detail="Failed to save the uploaded document.",
+        ) from exc
+
+        # Enqueue background processing only after the database commit.
+    try:
+        process_document.delay(document_id)
+
+    except Exception as exc:
+        # The PDF and database record exist, but the task
+        # could not be submitted to Redis.
+        try:
+            with get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        UPDATE documents
+                        SET status = 'failed'
+                        WHERE id = %s AND status = 'queued';
+                        """,
+                        (document_id,),
+                    )
+        except Exception:
+            pass
+
+        raise HTTPException(
+            status_code=503,
+            detail="PDF uploaded, but background processing could not be scheduled.",
         ) from exc
 
     return {
-        "message": "PDF processed successfully for semantic search!",
+        "message": "PDF uploaded successfully.",
         "filename": file.filename,
         "document_id": document_id,
-        "chunk_count": len(new_chunks),
+        "status": status,
     }
+
 
 
 
@@ -225,6 +244,99 @@ def search_document(request: SearchRequest):
         "results": results,
     }
 
+@app.get("/api/documents/{document_id}/status")
+def get_document_status(document_id: int):
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, filename, status
+                FROM documents
+                WHERE id = %s;
+                """,
+                (document_id,)
+            )
 
+            document = cur.fetchone()
+
+    if document is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Document not found."
+        )
+
+    return {
+        "document_id": document[0],
+        "filename": document[1],
+        "status": document[2]
+    }
+
+@app.delete("/api/documents/{document_id}")
+def delete_document(document_id: int):
+
+    # Step 1: Check the current document status
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT status
+                FROM documents
+                WHERE id = %s;
+                """,
+                (document_id,)
+            )
+            document = cur.fetchone()
+
+    if document is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Document not found."
+        )
+
+    if document[0] == "processing":
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot delete a document while it is processing."
+        )
+
+    # Step 2: Atomically delete the document if it is not processing
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                DELETE FROM documents
+                WHERE id = %s AND status != 'processing'
+                RETURNING storage_path;
+                """,
+                (document_id,)
+            )
+            deleted_document = cur.fetchone()
+
+    if deleted_document is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Document is currently being processed. Try again later."
+        )
+
+    storage_path = deleted_document[0]
+
+    # Step 3: Delete the physical PDF
+    if storage_path:
+        try:
+            pdf_path = get_pdf_path(storage_path)
+            pdf_path.unlink(missing_ok=True)
+
+        except (ValueError, OSError, FileNotFoundError) as exc:
+            # Database deletion has already succeeded.
+            # Log this error so orphaned files can be investigated.
+            print(
+                f"Could not delete PDF for document {document_id}: {exc}"
+            )
+
+    # Step 4: Return response
+    return {
+        "message": "Document deleted successfully.",
+        "document_id": document_id
+    }
 
 

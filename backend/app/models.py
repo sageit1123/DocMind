@@ -38,6 +38,18 @@ class Document(Base):
         passive_deletes=True,
     )
 
+    status: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+        default="queued",
+        server_default="queued",
+    )
+
+    storage_path: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
 
 class DocumentChunk(Base):
     __tablename__ = "document_chunks"

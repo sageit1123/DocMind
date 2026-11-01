@@ -1,3 +1,8 @@
+import re
+
+CHUNK_SIZE = 500
+CHUNK_OVERLAP = 100
+
 def create_chunks(text: str, page_number: int) -> list[dict]:
     """Create focused, sentence-aware chunks from one PDF page."""
 
