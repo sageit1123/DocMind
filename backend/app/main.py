@@ -13,7 +13,7 @@ MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 
 class SearchRequest(BaseModel):
     query: str = Field(min_length=1, max_length=1000)
-    top_k: int = Field(default=3, ge=1, le=10)
+    top_k: int = Field(default=5, ge=1, le=10)
 
 
 
@@ -202,11 +202,17 @@ def search_document(request: SearchRequest):
                 cur.execute(
                     """
                     SELECT
-                        page_number,
-                        chunk_text,
-                        1 - (embedding <=> %s::vector) AS similarity
-                    FROM document_chunks
-                    ORDER BY embedding <=> %s::vector
+                        dc.id AS chunk_id,
+                        dc.document_id,
+                        dc.page_number,
+                        dc.chunk_text,
+                        d.filename,
+                        1 - (dc.embedding <=> %s::vector) AS similarity
+                    FROM document_chunks AS dc
+                    JOIN documents AS d
+                    ON d.id = dc.document_id
+                    WHERE d.status = 'ready'
+                    ORDER BY dc.embedding <=> %s::vector
                     LIMIT %s;
                     """,
                     (
@@ -219,10 +225,10 @@ def search_document(request: SearchRequest):
                 rows = cur.fetchall()
 
     except Exception:
-        raise HTTPException(
-            status_code=500,
-            detail="Failed to search the document database.",
-        )
+        return {
+            "query": query,
+            "results": [],
+        }
 
     if not rows:
         raise HTTPException(
@@ -231,12 +237,22 @@ def search_document(request: SearchRequest):
         )
 
     results = [
-        {
-            "page": page_number,
-            "text": chunk_text,
-            "similarity": round(float(similarity), 4),
-        }
-        for page_number, chunk_text, similarity in rows
+    {
+        "chunk_id": chunk_id,
+        "document_id": document_id,
+        "page": page_number,
+        "filename": filename,
+        "text": chunk_text,
+        "similarity": round(float(similarity), 4),
+    }
+    for (
+        chunk_id,
+        document_id,
+        page_number,
+        chunk_text,
+        filename,
+        similarity,
+    ) in rows
     ]
 
     return {
