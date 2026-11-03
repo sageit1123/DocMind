@@ -1,13 +1,26 @@
+import asyncio
+import json
+
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.database import get_connection
-from app.services.embeddings import embedding_model
 from app.services.file_storage import save_pdf, get_pdf_path
 from app.tasks.document_tasks import process_document
 
-from app.database import get_connection
+from app.services.retrieval import retrieve_chunks
+
+from app.llm.fake import FakeLLMClient
+from app.services.rag import answer_question, stream_answer_question
+
+from app.services.conversations import (
+    create_conversation,
+    get_conversation,
+    get_conversation_history,
+    save_message,
+)
 
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 
@@ -15,12 +28,38 @@ class SearchRequest(BaseModel):
     query: str = Field(min_length=1, max_length=1000)
     top_k: int = Field(default=5, ge=1, le=10)
 
+class AskRequest(BaseModel):
+    query: str = Field(min_length=1, max_length=1000)
+    top_k: int = Field(default=5, ge=1, le=10)
+    conversation_id: int | None = Field(default=None, ge=1)
+
+def format_sse_event(data: dict) -> str:
+    """
+    Convert a Python dictionary into an SSE message.
+
+    SSE messages use the format:
+        data: {"type": "token", "content": "Hello"}
+
+    Each message ends with two newline characters.
+    """
+
+    json_data = json.dumps(data, ensure_ascii=False)
+
+    return f"data: {json_data}\n\n"
+
 
 
 # Temporary storage for the currently uploaded document.
 # This is suitable for our single-user local prototype.
 
 app = FastAPI()
+
+llm_client = FakeLLMClient(
+    response=(
+        "I found relevant information in the retrieved "
+        "documents. Please see the supporting passage [1]."
+    )
+)
 
 @app.get("/health")
 def health_check():
@@ -183,82 +222,268 @@ def search_document(request: SearchRequest):
             detail="Question cannot be empty.",
         )
 
-    # Generate the query embedding using the same model as uploaded chunks.
-    query_embedding = embedding_model.encode(
-        query,
-        normalize_embeddings=True,
-        show_progress_bar=False,
-    )
-
-    # Convert the embedding to pgvector's text representation.
-    embedding_values = (
-        "[" + ",".join(str(float(value)) for value in query_embedding) + "]"
-    )
-
     try:
-        with get_connection() as conn:
-            with conn.cursor() as cur:
-                # Find the most relevant chunks using cosine distance.
-                cur.execute(
-                    """
-                    SELECT
-                        dc.id AS chunk_id,
-                        dc.document_id,
-                        dc.page_number,
-                        dc.chunk_text,
-                        d.filename,
-                        1 - (dc.embedding <=> %s::vector) AS similarity
-                    FROM document_chunks AS dc
-                    JOIN documents AS d
-                    ON d.id = dc.document_id
-                    WHERE d.status = 'ready'
-                    ORDER BY dc.embedding <=> %s::vector
-                    LIMIT %s;
-                    """,
-                    (
-                        embedding_values,
-                        embedding_values,
-                        request.top_k,
-                    ),
-                )
-
-                rows = cur.fetchall()
-
-    except Exception:
-        return {
-            "query": query,
-            "results": [],
-        }
-
-    if not rows:
-        raise HTTPException(
-            status_code=400,
-            detail="Please upload a PDF before asking a question.",
+        results = retrieve_chunks(
+            query=query,
+            top_k=request.top_k,
         )
 
-    results = [
-    {
-        "chunk_id": chunk_id,
-        "document_id": document_id,
-        "page": page_number,
-        "filename": filename,
-        "text": chunk_text,
-        "similarity": round(float(similarity), 4),
-    }
-    for (
-        chunk_id,
-        document_id,
-        page_number,
-        chunk_text,
-        filename,
-        similarity,
-    ) in rows
-    ]
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to search the document database.",
+        )
 
     return {
         "query": query,
         "results": results,
     }
+
+@app.post("/api/ask")
+async def ask_document(request: AskRequest):
+    """
+    Answer a question using RAG and persist the conversation.
+
+    Workflow:
+        1. Create a new conversation or retrieve an existing one.
+        2. Load previous conversation history.
+        3. Save the current user question.
+        4. Execute the RAG pipeline with previous history.
+        5. Save the assistant answer and citations.
+        6. Return the conversation ID and answer.
+    """
+
+    query = request.query.strip()
+
+    if not query:
+        raise HTTPException(
+            status_code=400,
+            detail="Question cannot be empty.",
+        )
+
+    try:
+        # Step 1: Create or retrieve the conversation.
+        if request.conversation_id is None:
+            conversation = create_conversation(
+                title=query[:80]
+            )
+
+        else:
+            conversation = get_conversation(
+                request.conversation_id
+            )
+
+            if conversation is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Conversation not found.",
+                )
+
+        conversation_id = conversation["id"]
+
+        # Step 2: Load previous messages BEFORE saving
+        # the current question.
+        history = get_conversation_history(
+            conversation_id=conversation_id,
+            limit=50,
+        )
+
+        # Step 3: Persist the current user question.
+        save_message(
+            conversation_id=conversation_id,
+            role="user",
+            content=query,
+        )
+
+        # Step 4: Run the RAG pipeline with conversation history.
+        result = await answer_question(
+            query=query,
+            llm_client=llm_client,
+            top_k=request.top_k,
+            conversation_history=history,
+        )
+
+        # Step 5: Persist the assistant response and citations.
+        save_message(
+            conversation_id=conversation_id,
+            role="assistant",
+            content=result["answer"],
+            citations=result["citations"],
+        )
+
+        # Step 6: Return the conversation ID with the RAG result.
+        return {
+            "conversation_id": conversation_id,
+            **result,
+        }
+
+    except HTTPException:
+        raise
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+
+    except Exception as exc:
+        # Keep internal database/model errors out of the API response.
+        print(f"Error in /api/ask: {exc}")
+
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to generate an answer.",
+        ) from exc
+
+
+
+@app.post("/api/ask/stream")
+async def ask_document_stream(request: AskRequest):
+    """
+    Stream a RAG answer using Server-Sent Events.
+
+    Workflow:
+        1. Create or retrieve a conversation.
+        2. Load previous conversation history.
+        3. Save the current user question.
+        4. Stream tokens from the RAG service.
+        5. Save the complete assistant response and citations.
+        6. Send the final completion event.
+    """
+
+    query = request.query.strip()
+
+    if not query:
+        raise HTTPException(
+            status_code=400,
+            detail="Question cannot be empty.",
+        )
+
+    try:
+        # Step 1: Create or retrieve the conversation.
+        if request.conversation_id is None:
+            conversation = await asyncio.to_thread(
+                create_conversation,
+                title=query[:80],
+            )
+        else:
+            conversation = await asyncio.to_thread(
+                get_conversation,
+                request.conversation_id,
+            )
+
+            if conversation is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Conversation not found.",
+                )
+
+        conversation_id = conversation["id"]
+
+        # Step 2: Load previous history BEFORE saving
+        # the current question.
+        history = await asyncio.to_thread(
+            get_conversation_history,
+            conversation_id=conversation_id,
+            limit=50,
+        )
+
+        # Step 3: Save the user's question.
+        await asyncio.to_thread(
+            save_message,
+            conversation_id=conversation_id,
+            role="user",
+            content=query,
+        )
+
+    except HTTPException:
+        raise
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+
+    except Exception as exc:
+        print(f"Error preparing streaming request: {exc}")
+
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to prepare the streaming request.",
+        ) from exc
+
+    # Step 4: Stream the RAG response.
+    async def generate_events():
+        completed = False
+
+        try:
+            async for event in stream_answer_question(
+                query=query,
+                llm_client=llm_client,
+                top_k=request.top_k,
+                conversation_history=history,
+            ):
+
+                # Send incremental text to the client.
+                if event["type"] == "token":
+                    yield format_sse_event({
+                        "type": "token",
+                        "content": event["content"],
+                    })
+
+                # The RAG service has finished generating
+                # and validating the complete answer.
+                elif event["type"] == "complete":
+
+                    # Step 5: Persist the complete assistant response.
+                    await asyncio.to_thread(
+                        save_message,
+                        conversation_id=conversation_id,
+                        role="assistant",
+                        content=event["answer"],
+                        citations=event["citations"],
+                    )
+
+                    completed = True
+
+                    # Step 6: Send final metadata.
+                    yield format_sse_event({
+                        "type": "complete",
+                        "conversation_id": conversation_id,
+                        "answer": event["answer"],
+                        "citations": event["citations"],
+                        "sources": event["sources"],
+                    })
+
+            if not completed:
+                yield format_sse_event({
+                    "type": "error",
+                    "message": "The response did not complete.",
+                })
+
+        except asyncio.CancelledError:
+            # The client disconnected or cancelled the request.
+            # Do not save an incomplete assistant response.
+            raise
+
+        except Exception as exc:
+            print(f"Error during streaming: {exc}")
+
+            yield format_sse_event({
+                "type": "error",
+                "message": "Failed to generate the response.",
+            })
+
+    return StreamingResponse(
+        generate_events(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
 
 @app.get("/api/documents/{document_id}/status")
 def get_document_status(document_id: int):
