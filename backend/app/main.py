@@ -1,6 +1,10 @@
 import asyncio
 import json
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -12,7 +16,12 @@ from app.tasks.document_tasks import process_document
 
 from app.services.retrieval import retrieve_chunks
 
+import os
+
+from dotenv import load_dotenv
+
 from app.llm.fake import FakeLLMClient
+from app.llm.gemini import GeminiLLMClient
 from app.services.rag import answer_question, stream_answer_question
 
 from app.services.conversations import (
@@ -54,12 +63,40 @@ def format_sse_event(data: dict) -> str:
 
 app = FastAPI()
 
-llm_client = FakeLLMClient(
-    response=(
-        "I found relevant information in the retrieved "
-        "documents. Please see the supporting passage [1]."
-    )
-)
+# Load environment variables from backend/.env
+load_dotenv()
+
+
+def create_llm_client():
+    """
+    Create the LLM client based on the configured provider.
+
+    Supported providers:
+        - fake: Used for testing and CI.
+        - gemini: Uses Google's Gemini API.
+    """
+
+    provider = os.getenv("LLM_PROVIDER", "fake").lower()
+
+    if provider == "gemini":
+        return GeminiLLMClient()
+
+    elif provider == "fake":
+        return FakeLLMClient(
+            response=(
+                "I found relevant information in the retrieved "
+                "documents. Please see the supporting passage [1]."
+            )
+        )
+
+    else:
+        raise ValueError(
+            f"Unsupported LLM provider: {provider}"
+        )
+
+
+# Initialize the configured LLM client.
+llm_client = create_llm_client()
 
 @app.get("/health")
 def health_check():
@@ -414,8 +451,11 @@ async def ask_document_stream(request: AskRequest):
         ) from exc
 
     # Step 4: Stream the RAG response.
+    
     async def generate_events():
         completed = False
+        tokens_sent = False
+        generation_completed = False
 
         try:
             async for event in stream_answer_question(
@@ -425,18 +465,18 @@ async def ask_document_stream(request: AskRequest):
                 conversation_history=history,
             ):
 
-                # Send incremental text to the client.
                 if event["type"] == "token":
+                    tokens_sent = True
+
                     yield format_sse_event({
                         "type": "token",
                         "content": event["content"],
                     })
 
-                # The RAG service has finished generating
-                # and validating the complete answer.
                 elif event["type"] == "complete":
+                    generation_completed = True
 
-                    # Step 5: Persist the complete assistant response.
+                    # Persist the completed assistant response.
                     await asyncio.to_thread(
                         save_message,
                         conversation_id=conversation_id,
@@ -447,7 +487,6 @@ async def ask_document_stream(request: AskRequest):
 
                     completed = True
 
-                    # Step 6: Send final metadata.
                     yield format_sse_event({
                         "type": "complete",
                         "conversation_id": conversation_id,
@@ -464,16 +503,38 @@ async def ask_document_stream(request: AskRequest):
 
         except asyncio.CancelledError:
             # The client disconnected or cancelled the request.
-            # Do not save an incomplete assistant response.
             raise
 
-        except Exception as exc:
-            print(f"Error during streaming: {exc}")
+        except Exception:
+            logger.exception(
+                "Error during streaming for conversation %s",
+                conversation_id,
+            )
+
+            if generation_completed:
+                error_message = (
+                    "The answer was generated, but could not be saved. "
+                    "Please check your conversation history."
+                )
+
+            elif tokens_sent:
+                error_message = (
+                    "The AI service became unavailable during generation. "
+                    "The partial answer is shown above. "
+                    "Please try again."
+                )
+
+            else:
+                error_message = (
+                    "The AI service is temporarily unavailable. "
+                    "Please try again later."
+                )
 
             yield format_sse_event({
                 "type": "error",
-                "message": "Failed to generate the response.",
+                "message": error_message,
             })
+
 
     return StreamingResponse(
         generate_events(),
