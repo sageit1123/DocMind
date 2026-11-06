@@ -25,8 +25,8 @@ def retrieve_chunks(query: str, top_k: int = 5) -> list[dict]:
     if isinstance(top_k, bool) or not isinstance(top_k, int):
         raise ValueError("top_k must be an integer.")
 
-    if not 1 <= top_k <= 10:
-        raise ValueError("top_k must be between 1 and 10.")
+    if not 1 <= top_k <= 50:
+        raise ValueError("top_k must be between 1 and 50.")
 
     # 3. Generate the query embedding using the same model
     # that was used to generate document chunk embeddings.

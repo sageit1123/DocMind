@@ -1,0 +1,187 @@
+{
+    "summary": {
+        "retrieval_method": "vector_search",
+        "top_k": 5,
+        "candidate_chunks": 50,
+        "total_questions": 9,
+        "average_precision_at_5": 0.2,
+        "average_recall_at_5": 1.0,
+        "mean_reciprocal_rank": 1.0,
+        "average_latency_ms": 17.69
+    },
+    "results": [
+        {
+            "id": "Q01",
+            "query": "How can a student reset their campus password?",
+            "expected_filenames": [
+                "01_campus_it_helpdesk_guide.pdf"
+            ],
+            "retrieved_filenames": [
+                "01_campus_it_helpdesk_guide.pdf",
+                "Lab-9-PipelinedMIPS-HDU.pdf",
+                "CA_Lab_7_pipeline.pdf",
+                "16)kmeans.pdf"
+            ],
+            "metrics": {
+                "precision_at_5": 0.2,
+                "recall_at_5": 1.0,
+                "reciprocal_rank": 1.0
+            },
+            "latency_ms": 17.47
+        },
+        {
+            "id": "Q02",
+            "query": "What should I do if I cannot access my university account?",
+            "expected_filenames": [
+                "01_campus_it_helpdesk_guide.pdf"
+            ],
+            "retrieved_filenames": [
+                "01_campus_it_helpdesk_guide.pdf",
+                "CA_Lab_7_pipeline.pdf",
+                "Lab-9-PipelinedMIPS-HDU.pdf",
+                "16)kmeans.pdf",
+                "02_employee_leave_and_travel_policy.pdf"
+            ],
+            "metrics": {
+                "precision_at_5": 0.2,
+                "recall_at_5": 1.0,
+                "reciprocal_rank": 1.0
+            },
+            "latency_ms": 16.56
+        },
+        {
+            "id": "Q03",
+            "query": "How do I report an IT problem on campus?",
+            "expected_filenames": [
+                "01_campus_it_helpdesk_guide.pdf"
+            ],
+            "retrieved_filenames": [
+                "01_campus_it_helpdesk_guide.pdf",
+                "CA_Lab_7_pipeline.pdf",
+                "Lab-9-PipelinedMIPS-HDU.pdf",
+                "16)kmeans.pdf",
+                "03_orbit_devices_product_catalog.pdf"
+            ],
+            "metrics": {
+                "precision_at_5": 0.2,
+                "recall_at_5": 1.0,
+                "reciprocal_rank": 1.0
+            },
+            "latency_ms": 17.32
+        },
+        {
+            "id": "Q04",
+            "query": "What is the process for applying for employee leave?",
+            "expected_filenames": [
+                "02_employee_leave_and_travel_policy.pdf"
+            ],
+            "retrieved_filenames": [
+                "02_employee_leave_and_travel_policy.pdf",
+                "Lab-9-PipelinedMIPS-HDU.pdf",
+                "CA_Lab_7_pipeline.pdf",
+                "16)kmeans.pdf"
+            ],
+            "metrics": {
+                "precision_at_5": 0.2,
+                "recall_at_5": 1.0,
+                "reciprocal_rank": 1.0
+            },
+            "latency_ms": 18.41
+        },
+        {
+            "id": "Q05",
+            "query": "What are the rules for travelling and claiming expenses?",
+            "expected_filenames": [
+                "02_employee_leave_and_travel_policy.pdf"
+            ],
+            "retrieved_filenames": [
+                "02_employee_leave_and_travel_policy.pdf",
+                "16)kmeans.pdf",
+                "01_campus_it_helpdesk_guide.pdf",
+                "03_orbit_devices_product_catalog.pdf"
+            ],
+            "metrics": {
+                "precision_at_5": 0.2,
+                "recall_at_5": 1.0,
+                "reciprocal_rank": 1.0
+            },
+            "latency_ms": 17.84
+        },
+        {
+            "id": "Q06",
+            "query": "How many days of leave can an employee take?",
+            "expected_filenames": [
+                "02_employee_leave_and_travel_policy.pdf"
+            ],
+            "retrieved_filenames": [
+                "02_employee_leave_and_travel_policy.pdf",
+                "01_campus_it_helpdesk_guide.pdf",
+                "03_orbit_devices_product_catalog.pdf"
+            ],
+            "metrics": {
+                "precision_at_5": 0.2,
+                "recall_at_5": 1.0,
+                "reciprocal_rank": 1.0
+            },
+            "latency_ms": 16.34
+        },
+        {
+            "id": "Q07",
+            "query": "What products does Orbit Devices offer?",
+            "expected_filenames": [
+                "03_orbit_devices_product_catalog.pdf"
+            ],
+            "retrieved_filenames": [
+                "03_orbit_devices_product_catalog.pdf",
+                "16)kmeans.pdf",
+                "CA_Lab_7_pipeline.pdf",
+                "01_campus_it_helpdesk_guide.pdf",
+                "02_employee_leave_and_travel_policy.pdf"
+            ],
+            "metrics": {
+                "precision_at_5": 0.2,
+                "recall_at_5": 1.0,
+                "reciprocal_rank": 1.0
+            },
+            "latency_ms": 15.73
+        },
+        {
+            "id": "Q08",
+            "query": "What are the specifications of the available devices?",
+            "expected_filenames": [
+                "03_orbit_devices_product_catalog.pdf"
+            ],
+            "retrieved_filenames": [
+                "03_orbit_devices_product_catalog.pdf",
+                "CA_Lab_7_pipeline.pdf",
+                "Lab-9-PipelinedMIPS-HDU.pdf",
+                "16)kmeans.pdf",
+                "01_campus_it_helpdesk_guide.pdf"
+            ],
+            "metrics": {
+                "precision_at_5": 0.2,
+                "recall_at_5": 1.0,
+                "reciprocal_rank": 1.0
+            },
+            "latency_ms": 21.67
+        },
+        {
+            "id": "Q09",
+            "query": "Compare the prices of the available products.",
+            "expected_filenames": [
+                "03_orbit_devices_product_catalog.pdf"
+            ],
+            "retrieved_filenames": [
+                "03_orbit_devices_product_catalog.pdf",
+                "16)kmeans.pdf",
+                "02_employee_leave_and_travel_policy.pdf"
+            ],
+            "metrics": {
+                "precision_at_5": 0.2,
+                "recall_at_5": 1.0,
+                "reciprocal_rank": 1.0
+            },
+            "latency_ms": 17.83
+        }
+    ]
+}

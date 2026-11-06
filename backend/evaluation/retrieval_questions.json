@@ -1,0 +1,65 @@
+[
+  {
+    "id": "Q01",
+    "query": "How can a student reset their campus password?",
+    "expected_filenames": [
+      "01_campus_it_helpdesk_guide.pdf"
+    ]
+  },
+  {
+    "id": "Q02",
+    "query": "What should I do if I cannot access my university account?",
+    "expected_filenames": [
+      "01_campus_it_helpdesk_guide.pdf"
+    ]
+  },
+  {
+    "id": "Q03",
+    "query": "How do I report an IT problem on campus?",
+    "expected_filenames": [
+      "01_campus_it_helpdesk_guide.pdf"
+    ]
+  },
+  {
+    "id": "Q04",
+    "query": "What is the process for applying for employee leave?",
+    "expected_filenames": [
+      "02_employee_leave_and_travel_policy.pdf"
+    ]
+  },
+  {
+    "id": "Q05",
+    "query": "What are the rules for travelling and claiming expenses?",
+    "expected_filenames": [
+      "02_employee_leave_and_travel_policy.pdf"
+    ]
+  },
+  {
+    "id": "Q06",
+    "query": "How many days of leave can an employee take?",
+    "expected_filenames": [
+      "02_employee_leave_and_travel_policy.pdf"
+    ]
+  },
+  {
+    "id": "Q07",
+    "query": "What products does Orbit Devices offer?",
+    "expected_filenames": [
+      "03_orbit_devices_product_catalog.pdf"
+    ]
+  },
+  {
+    "id": "Q08",
+    "query": "What are the specifications of the available devices?",
+    "expected_filenames": [
+      "03_orbit_devices_product_catalog.pdf"
+    ]
+  },
+  {
+    "id": "Q09",
+    "query": "Compare the prices of the available products.",
+    "expected_filenames": [
+      "03_orbit_devices_product_catalog.pdf"
+    ]
+  }
+]
